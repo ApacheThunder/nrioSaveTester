@@ -9,7 +9,6 @@
 
 #define programSav 0x02000000
 #define saveBuff 0x02000200
-// #define saveTest 0x02000300
 
 typedef struct sProgSAVStruct {
 	u8 padding[240];
@@ -23,6 +22,7 @@ typedef struct sProgSAVStruct {
 volatile tProgSAVStruct* ProgSave;
 volatile tProgSAVStruct* TestSave;
 
+
 static PrintConsole tpConsole;
 static PrintConsole btConsole;
 
@@ -31,23 +31,18 @@ extern PrintConsole* currentConsole;
 static int bg;
 static int bgSub;
 
-const char* textBuffer = "X------------------------------X\nX------------------------------X";
-
-volatile bool UpdateProgressText = false;
-volatile bool PrintWithStat = false;
-volatile bool ClearOnUpdate = true;
+volatile bool flashText = false;
+volatile bool isErrorText = false;
+volatile int colorToggle = 0;
+volatile int flashTimer = 0;
 volatile int savetype = 0;
 volatile u32 savesize = 0;
 
 extern u8 saveBinary[512];
 
-// DTCM_DATA u8 savebuf[512];
-// DTCM_DATA u8 testbuf[256];
-
-
 bool ReadOrWritePrompt() {
-	printf("\n Press [A] to test current save.");
-	printf("\n\n Press [B] to write new save\n and exit.\n");
+	printf("\n Press \x1b[32;1m[A]\x1b[37;1m to test current save.");
+	printf("\n\n Press \x1b[32;1m[B]\x1b[37;1m to write new save\n and exit.\n");
 	while(1) {
 		swiWaitForVBlank();
 		scanKeys();
@@ -65,13 +60,15 @@ bool ReadOrWritePrompt() {
 	}
 }
 
-int ExitPrompt(bool isError) {
+int ExitPrompt(bool isError, bool FlashText) {
 	if (isError) {
 		printf("\n Failed to detect a valid\n save chip.\n");
+		printf("\n\n Press \x1b[31;1m[A]\x1b[37;1m to exit.\n");
 	} else {
-		printf("\n Finished save operations.\n");
+		printf("\n\n\n\n\n Finished test operations.\n");
+		printf("\n\n Press \x1b[32;1m[A]\x1b[37;1m to exit.\n");
 	}
-	printf("\n\n Press [A] to exit.\n");
+	flashText = FlashText;
 	while(1) {
 		swiWaitForVBlank();
 		scanKeys();
@@ -79,6 +76,7 @@ int ExitPrompt(bool isError) {
 			case KEY_A: return 0;
 		}
 	}
+	flashText = false;
 	return 0;
 }
 
@@ -108,9 +106,35 @@ void CustomConsoleInit() {
 	consoleSelect(&tpConsole);
 }
 
+
+
+void vBlankHandler (void) {
+	if (flashText) {
+		if (flashTimer < 0) {
+			flashTimer = 31;
+			consoleSelect(&tpConsole);
+			consoleClear();
+			if (colorToggle == 0) {
+				if (isErrorText) {
+					printf("\n\n\n\n\n\n\n\n\n\n\n   \x1b[31;1mN-CARD SAVE BATTERY TESTER\x1b[37;1m");
+				} else {
+					printf("\n\n\n\n\n\n\n\n\n\n\n   \x1b[32;1mN-CARD SAVE BATTERY TESTER\x1b[37;1m");
+				}
+				colorToggle = 1;
+			} else {
+				printf("\n\n\n\n\n\n\n\n\n\n\n   N-CARD SAVE BATTERY TESTER");
+				colorToggle = 0;
+			}
+			consoleSelect(&btConsole);
+		}
+		flashTimer--;
+	}
+}
+
 int main(void) {
 	defaultExceptionHandler();
 	CustomConsoleInit();
+	irqSet(IRQ_VBLANK, vBlankHandler);
 	sysSetCartOwner(true);
 	printf("\n\n\n\n\n\n\n\n\n\n\n   N-CARD SAVE BATTERY TESTER");
 	consoleSelect(&btConsole);
@@ -127,30 +151,40 @@ int main(void) {
 		
 		if (ReadOrWritePrompt()) {
 			consoleClear();
-			// cardReadEeprom(0, (u8*)saveBuff, 512, savetype);
 			cardmeReadEeprom(0, (u8*)saveBuff, 512, savetype);
 			TestSave = (tProgSAVStruct*)saveBuff;
 			
 			u16 get_crc16 = swiCRC16(0xFFFF, (void*)TestSave->saveBinary, 0x100);
 			u32 get_crc32 = crc32((unsigned char*)TestSave->saveBinary, 0x100);
 
-			iprintf(" Expected CRC16: %2X\n", (unsigned int)ProgSave->savCRC16);
-			iprintf(" Expected CRC32: %4X\n\n", (unsigned int)ProgSave->savCRC32);
-			iprintf(" Got save CRC16: %2X\n", (unsigned int)get_crc16);
-			iprintf(" Got save CRC32: %4X\n\n", (unsigned int)get_crc32);
+			iprintf("\n Expected CRC16: %2X", (unsigned int)ProgSave->savCRC16);
+			iprintf("\n Expected CRC32: %4X\n\n", (unsigned int)ProgSave->savCRC32);
 			
 			if ((ProgSave->savCRC16 != get_crc16) || (ProgSave->savCRC32 != get_crc32)) {
-				if (ProgSave->savCRC16 != get_crc16)printf(" CRC16 mismatch!\n");
-				if (ProgSave->savCRC32 != get_crc32)printf(" CRC32 mismatch!\n\n");
-				printf(" Battery may need changing!");
+				iprintf(" Got save CRC16: \x1b[31;1m%2X\x1b[37;1m\n", (unsigned int)get_crc16);
+				iprintf(" Got save CRC32: \x1b[31;1m%4X\x1b[37;1m\n\n", (unsigned int)get_crc32);
+			
+				if (ProgSave->savCRC16 != get_crc16)printf("\x1b[31;1m CRC16 mismatch!\x1b[37;1m\n");
+				if (ProgSave->savCRC32 != get_crc32)printf("\x1b[31;1m CRC32 mismatch!\x1b[37;1m\n\n\n");
+				printf(" \x1b[31;1mBattery may need changing!\x1b[37;1m");
+				isErrorText = true;
+			} else {
+				iprintf(" Got save CRC16: \x1b[32;1m%2X\x1b[37;1m\n", (unsigned int)get_crc16);
+				iprintf(" Got save CRC32: \x1b[32;1m%4X\x1b[37;1m\n\n\n", (unsigned int)get_crc32);
+				printf(" \x1b[32;1mAll CRCs match!\x1b[37;1m");
+				isErrorText = false;
 			}
 		} else {
+			consoleClear();
 			if(savetype == 3)cardmeSectorErase(0);
 			cardmeWriteEeprom(0, (u8*)programSav, 512, savetype);
+			printf("\x1b[32;1m\n Save write completed.\x1b[37;1m\n");
+			return ExitPrompt(false, false);
 		}
 	} else {
-		return ExitPrompt(true);
+		isErrorText = true;
+		return ExitPrompt(true, true);
 	}
-	return ExitPrompt(false);
+	return ExitPrompt(false, true);
 }
 
